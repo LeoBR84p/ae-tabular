@@ -1,0 +1,34 @@
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv*/
+venv/
+
+# segredos
+.env
+*.key
+*.pem
+*.tok
+
+# jupyter/colab
+.ipynb_checkpoints/
+
+# artefatos e dados locais (não versionar)
+data/
+input/                 # inclui input.csv sensível
+output/
+runs/
+logs/
+figures/
+*.log
+*.tmp
+*.bak
+*.png
+*.jpg
+*.pdf
+*.html
+
+# allowlist para a pasta de referências
+!references/
+!references/**
