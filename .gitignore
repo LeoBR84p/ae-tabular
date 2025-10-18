@@ -19,8 +19,14 @@ data/
 input/                 # inclui input.csv sensível
 output/
 runs/
+prerun/
+artifacts/
+database/
 logs/
 figures/
+*.json
+*.sqlite
+*.csv
 *.log
 *.tmp
 *.bak
@@ -29,6 +35,6 @@ figures/
 *.pdf
 *.html
 
-# allowlist para a pasta de referências
+# allowlist para a pasta de referências bibliográficas
 !references/
 !references/**
