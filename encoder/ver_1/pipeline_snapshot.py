@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
-# snapshot gerado automaticamente — não editar manualmente
-# gerado em: 2025-10-20T02:40:50.461560
+# Snapshot gerado pela §5 — NÃO editar manualmente.
+# Contém as funções de engenharia/codificação consumidas nas §8+.
+import pandas as pd
+import numpy as np
+import re
+import json
 
 def build_features(
     df_in: pd.DataFrame,
@@ -8,22 +12,18 @@ def build_features(
     save_rejects: bool = False,
     run_dir: Path | None = None,
     tz: str = "America/Sao_Paulo",
-    strict_date_threshold: float = 1.0  # em %, erro máximo aceitável antes de levantar exceção
+    strict_date_threshold: float = 1.0  # % máximo de datas inválidas permitido (estrito)
 ) -> pd.DataFrame:
     """
-    Reaplica a engenharia da Etapa 5 sobre `df_in` e retorna o DataFrame de features.
+    Reaplica a engenharia da §5 sobre df_in e retorna o DataFrame de features.
 
     Parâmetros:
-      - save_rejects: se True e run_dir não for None, salva CSV/JSON de registros com data inválida.
-      - strict_date_threshold: percentual máximo (em %) de datas inválidas; acima disso levanta exceção.
-
-    Observação:
-      - Na Etapa 5 (treino), usamos save_rejects=True para auditoria.
-      - Nas Etapas 8+, o padrão (False) evita I/O desnecessário.
+      - save_rejects: se True (e run_dir definido), salva CSV/JSON dos registros com data inválida.
+      - strict_date_threshold: percentual máximo (em %) de datas inválidas; acima disso gera exceção.
     """
     df_feat = df_in.copy()
 
-    # --------- checagem de colunas obrigatórias ----------
+    # --------- colunas obrigatórias ----------
     REQ_COLS = ["data_lcto", "username", "lotacao", "contacontabil", "dc", "valormi"]
     missing = [c for c in REQ_COLS if c not in df_feat.columns]
     if missing:
@@ -45,33 +45,26 @@ def build_features(
     pct_inv = (100.0 * n_inv / n_total) if n_total else 0.0
     print(f"[§5] Qualidade 'data_lcto' (aaaa-mm-dd): inválidos = {n_inv}/{n_total} ({pct_inv:.2f}%).")
 
-    # salvar rejeições (opcional, para treino/auditoria)
+    # salvar rejeições (opcional, treino/auditoria)
     if save_rejects and n_inv > 0 and run_dir is not None:
         stamp = datetime.now(ZoneInfo(tz)).strftime("%Y%m%d-%H%M%S")
         rej_cols = ["data_lcto","username","lotacao","contacontabil","dc","valormi"]
         df_rej = df_feat.loc[invalid_mask, rej_cols].copy()
-        (run_dir / f"rejects_data_lcto_{stamp}.csv").write_text(
-            df_rej.to_csv(index=False, encoding="utf-8-sig")
-        )
-        (run_dir / f"rejects_data_lcto_{stamp}.json").write_text(
-            df_rej.to_json(orient="records", force_ascii=False, indent=2), encoding="utf-8"
-        )
-        print(f"[§5] Rejeições salvas: rejects_data_lcto_{stamp}.csv/.json")
+        rej_csv  = run_dir / f"rejects_data_lcto_{stamp}.csv"
+        rej_json = run_dir / f"rejects_data_lcto_{stamp}.json"
+        df_rej.to_csv(rej_csv, index=False, encoding="utf-8-sig")
+        rej_json.write_text(df_rej.to_json(orient="records", force_ascii=False, indent=2), encoding="utf-8")
+        print(f"[§5] Rejeições salvas: {rej_csv.name} / {rej_json.name}")
 
-    # política de erro (estrita, como na sua etapa): trava se exceder limiar
+    # política estrita para datas
     if pct_inv > float(strict_date_threshold):
-        raise RuntimeError(
-            f"[§5] ERRO: {pct_inv:.2f}% datas inválidas (>{strict_date_threshold}%)."
-        )
+        raise RuntimeError(f"[§5] ERRO: {pct_inv:.2f}% datas inválidas (>{strict_date_threshold}%).")
 
     df_feat["data_lcto"] = df_feat["data_lcto_parsed"]
     df_feat = df_feat.drop(columns=["data_lcto_parsed"]).dropna(subset=["data_lcto"]).reset_index(drop=True)
 
     # ========= 2) Hierarquia da conta: g1/g2/g3 =========
-    conta_digits = (
-        df_feat["contacontabil"].astype(str)
-               .str.replace(r"\D+", "", regex=True)
-    )
+    conta_digits = df_feat["contacontabil"].astype(str).str.replace(r"\D+", "", regex=True)
     df_feat["conta_digits"] = conta_digits
     df_feat["g1"] = conta_digits.str.slice(0, 1)
     df_feat["g2"] = conta_digits.str.slice(0, 2)
@@ -89,10 +82,6 @@ def build_features(
 
     # ========= 4) Helpers (blocos) =========
     def _zblock(values: pd.Series, group_df: pd.DataFrame, group_keys: list[str]) -> pd.Series:
-        """
-        z-score de 'values' por grupos (group_keys), sem criar colunas no df principal.
-        Retorna uma Series alinhada ao índice do df.
-        """
         aux = group_df[group_keys].copy()
         aux = aux.assign(_v=values.values)
         grp = aux.groupby(group_keys)["_v"]
@@ -102,25 +91,13 @@ def build_features(
         return z.fillna(0.0)
 
     def make_block(df: pd.DataFrame, keys_base: list[str], period: str, base_name: str, by_dc: bool) -> pd.DataFrame:
-        """
-        Gera e retorna um bloco (DataFrame) com:
-          freq_, val_, val_med_, val__z, val_med__z
-        sem tocar no df original.
-        """
         keys = keys_base + (["dc"] if by_dc else []) + [period]
-
-        # Frequência
         s_freq = df.groupby(keys)[keys[0]].transform("size").astype("int32")
-        # Soma de valor
         s_val  = df.groupby(keys)["valormi_float"].transform("sum")
-        # Média (com proteção)
         s_mean = np.where(s_freq > 0, s_val / s_freq, 0.0)
-
-        # Z-scores por entidade (sem período)
         z_keys = keys_base + (["dc"] if by_dc else [])
         s_val_z  = _zblock(pd.Series(s_val, index=df.index),  df, z_keys)
         s_mean_z = _zblock(pd.Series(s_mean, index=df.index), df, z_keys)
-
         suffix = ("_dc" if by_dc else "")
         cols = {
             f"freq_{period}_{base_name}{suffix}": s_freq,
@@ -134,7 +111,7 @@ def build_features(
     # ========= 5) Métricas =========
     NEW_BLOCKS = []
 
-    # Totais agregados por período (atividade geral) — bloco único
+    # Totais agregados por período (atividade geral)
     blk_tot = pd.DataFrame(index=df_feat.index)
     blk_tot["freq_mes_user_total"]    = df_feat.groupby(["username","mes"])["username"].transform("size").astype("int32")
     blk_tot["freq_tri_user_total"]    = df_feat.groupby(["username","trimestre"])["username"].transform("size").astype("int32")
@@ -175,7 +152,7 @@ def build_features(
 
     return df_feat
 
-
+# --- opcional: codificação categórica ---
 def encode_categoricals(df: pd.DataFrame,
                         cat_cols: list[str] = None,
                         maps: dict[str, dict[str, int]] = None,
@@ -208,4 +185,3 @@ def encode_categoricals(df: pd.DataFrame,
         series = out[col].fillna("").astype(str)
         out[col + suffix] = series.map(lambda x: cmap.get(x, oov)).astype("int32")
     return out
-
